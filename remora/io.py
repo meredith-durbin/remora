@@ -2,7 +2,11 @@
 
 import pandas as pd
 import re
+import vaex
 
+__all__ = ['read_colfile', 'ascii_to_vaex', 'select_cols']
+
+# Mappings of DOLPHOT column descriptions to column names
 replace_single = {
     '((Total)|(Measured)) counts'       : 'COUNT',
     '((Total)|(Measured)) sky level'    : 'SKY',
@@ -19,7 +23,7 @@ replace_global = {
     '(ness)|(ing)'    : '',
 }
 
-def get_colnames(colfile, replace_single=replace_single,
+def read_colfile(colfile, replace_single=replace_single,
                  replace_global=replace_global):
     """Construct a table of column names for DOLPHOT output, with indices
     corresponding to the column number in the DOLPHOT output file.
@@ -31,7 +35,7 @@ def get_colnames(colfile, replace_single=replace_single,
 
     Returns
     -------
-    df_col : DataFrame
+    df_col : pandas.DataFrame
         A table of column descriptions and their corresponding names.
     """
     # read column file, splitting into index (column number) and description
@@ -43,6 +47,7 @@ def get_colnames(colfile, replace_single=replace_single,
     df_single = df_col.loc[is_single]
     df_global = df_col.drop(df_single.index)
     
+    # get rid of 'Object' and select first word
     names_global = df_global.desc.str.replace('Object','').\
                                   str.strip().str.split().str[0]
     
@@ -66,3 +71,78 @@ def get_colnames(colfile, replace_single=replace_single,
                                  ).str.replace('^_','')
     df_col.loc[:, 'names'] = names
     return df_col
+
+def ascii_to_vaex(asciifile, names, usecols=None):
+    """Construct a table of column names for DOLPHOT output, with indices
+    corresponding to the column number in the DOLPHOT output file.
+
+    Inputs
+    ------
+    asciifile : str, path object or file-like object
+        Path to DOLPHOT photometry file; see pandas.read_csv
+    names : list-like
+        Sequence of column names; see pandas.read_csv
+    usecols : list-like or callable, optional
+        Subset of columns to be read in; see pandas.read_csv
+        If None, assumes 'names' sequence corresponds to first N columns
+
+    Returns
+    -------
+    ds : vaex.dataframe.DataFrame
+        Photometry table.
+    """
+    usecols = list(range(len(names))) if usecols is None else usecols
+    ds = vaex.from_csv(asciifile, delim_whitespace=True, 
+                       names=names, usecols=usecols, header=None, 
+                       na_values=['99.999'], copy_index=False)
+    return ds
+
+
+
+# HERE BE DRAGONS aka non-generalized functions
+    
+def select_cols(df_col, regex='(^[X,Y]$)|(^[F,G]Q?[0-9]{2,5}[W,M,N,X,L]P?_)'):
+    """Select the columns to be used in ascii_to_vaex
+    Only for M33 use right now!!!
+    Regex: X + Y + all columns beginning with any ACS/WFC3 filter name
+    """
+    cols = df_col.loc[df_col.names.str.match(regex), 'names']
+    names = cols.tolist()
+    usecols = (cols.index-1).tolist()
+    return names, usecols
+
+def calc_xmed(ds_left, ds_right):
+    # get center pixel for overlapping photometry
+    return int(round((ds_right.X.min() + ds_left.X.max())/2))
+    
+def merge_parallel_phot(name, export=True):
+    # merge 3 photsec catalogs
+    ds1 = vaex.open(f'{name}/{name}_1.phot.hdf5')
+    ds2 = vaex.open(f'{name}/{name}_2.phot.hdf5')
+    ds3 = vaex.open(f'{name}/{name}_3.phot.hdf5')
+    x0, x1 = calc_xmed(ds1, ds2), calc_xmed(ds2, ds3)
+    ds1.select(f'X <= {x0}', name='__filter__')
+    ds2.select_box(['X'], [[x0, x1]], name='__filter__')
+    ds3.select(f'X >= {x1}', name='__filter__')
+    ds = vaex.dataframe.DataFrameConcatenated([d.extract() for d in 
+                                               [ds1, ds2, ds3]])
+    if export:
+        ds.export_hdf5(f'{name}/{name}.phot.hdf5')
+        print(f'Merged catalogs written to {name}/{name}.phot.hdf5')
+    else:
+        return ds
+
+
+if __name__ == '__main__':
+    import sys
+    base = sys.argv[1]
+    for i in range(1,4):
+        photfile = f'{base}/{base}_{i}.phot'
+        colfile = photfile + '.columns'
+        hdffile = photfile + '.hdf5'
+        df_col = read_colfile(colfile)
+        names, usecols = select_cols(df_col)
+        ascii_to_vaex(photfile, names=names,
+                      usecols=usecols).export_hdf5(hdffile)
+        print(f'Written {hdffile}')
+    merge_parallel_phot(base)
