@@ -23,10 +23,10 @@ replace_global = {
     '(ness)|(ing)'    : '',
 }
 
+
 def read_colfile(colfile, replace_single=replace_single,
                  replace_global=replace_global):
-    """Construct a table of column names for DOLPHOT output, with indices
-    corresponding to the column number in the DOLPHOT output file.
+    """Construct a table of column names for DOLPHOT output.
 
     Inputs
     ------
@@ -39,42 +39,42 @@ def read_colfile(colfile, replace_single=replace_single,
         A table of column descriptions and their corresponding names.
     """
     # read column file, splitting into index (column number) and description
-    df_col = pd.read_csv(colfile, sep='\.\ ', names=['desc'],
+    df_col = pd.read_csv(colfile, sep=re.escape('. '), names=['desc'],
                          index_col=0, engine='python')
     # split into "single" and "global" based on having a ', ' before ' ('
     is_single = df_col['desc'].str.split(re.escape(' (')).str[0].\
-                               str.contains(re.escape(', '))
+        str.contains(re.escape(', '))
     df_single = df_col.loc[is_single]
     df_global = df_col.drop(df_single.index)
-    
+
     # get rid of 'Object' and select first word
-    names_global = df_global.desc.str.replace('Object','').\
-                                  str.strip().str.split().str[0]
-    
+    names_global = df_global.desc.str.replace('Object', '').\
+        str.strip().str.split().str[0]
+
     single_split = df_single['desc'].str.split(re.escape(', '))
-    
+
     names_single = single_split.str[0]
     for k, v in replace_single.items():
         names_single = names_single.replace(re.compile(k), v)
-    
+
     names_concat = pd.concat([names_global, names_single]
-                            ).reindex_like(df_col)
+                             ).reindex_like(df_col)
     for k, v in replace_global.items():
         names_concat = names_concat.replace(re.compile(k), v)
-        
+
     prefix_global = pd.Series('', index=names_global.index)
     prefix_single = single_split.str[1].str.split().str[0].\
-                                 str.replace(re.escape('.chip'), '_chip')
+        str.replace(re.escape('.chip'), '_chip')
     prefix_concat = pd.concat([prefix_global, prefix_single]
-                             ).reindex_like(df_col)
+                              ).reindex_like(df_col)
     names = prefix_concat.str.cat(names_concat.str.upper(), sep='_'
-                                 ).str.replace('^_','')
+                                  ).str.replace('^_', '')
     df_col.loc[:, 'names'] = names
     return df_col
 
+
 def ascii_to_vaex(asciifile, names, usecols=None):
-    """Construct a table of column names for DOLPHOT output, with indices
-    corresponding to the column number in the DOLPHOT output file.
+    """Read raw DOLPHOT output photometry into Vaex.
 
     Inputs
     ------
@@ -92,17 +92,18 @@ def ascii_to_vaex(asciifile, names, usecols=None):
         Photometry table.
     """
     usecols = list(range(len(names))) if usecols is None else usecols
-    ds = vaex.from_csv(asciifile, delim_whitespace=True, 
-                       names=names, usecols=usecols, header=None, 
+    ds = vaex.from_csv(asciifile, delim_whitespace=True,
+                       names=names, usecols=usecols, header=None,
                        na_values=['99.999'], copy_index=False)
     return ds
 
 
-
 # HERE BE DRAGONS aka non-generalized functions
-    
+
+
 def select_cols(df_col, regex='(^[X,Y]$)|(^[F,G]Q?[0-9]{2,5}[W,M,N,X,L]P?_)'):
-    """Select the columns to be used in ascii_to_vaex
+    """Select columns to be used in ascii_to_vaex.
+
     Only for M33 use right now!!!
     Regex: X + Y + all columns beginning with any ACS/WFC3 filter name
     """
@@ -111,10 +112,12 @@ def select_cols(df_col, regex='(^[X,Y]$)|(^[F,G]Q?[0-9]{2,5}[W,M,N,X,L]P?_)'):
     usecols = (cols.index-1).tolist()
     return names, usecols
 
+
 def calc_xmed(ds_left, ds_right):
     # get center pixel for overlapping photometry
     return int(round((ds_right.X.min() + ds_left.X.max())/2))
-    
+
+
 def merge_parallel_phot(name, export=True):
     # merge 3 photsec catalogs
     ds1 = vaex.open(f'{name}/{name}_1.phot.hdf5')
@@ -124,7 +127,7 @@ def merge_parallel_phot(name, export=True):
     ds1.select(f'X <= {x0}', name='__filter__')
     ds2.select_box(['X'], [[x0, x1]], name='__filter__')
     ds3.select(f'X >= {x1}', name='__filter__')
-    ds = vaex.dataframe.DataFrameConcatenated([d.extract() for d in 
+    ds = vaex.dataframe.DataFrameConcatenated([d.extract() for d in
                                                [ds1, ds2, ds3]])
     if export:
         ds.export_hdf5(f'{name}/{name}.phot.hdf5')
@@ -136,7 +139,7 @@ def merge_parallel_phot(name, export=True):
 if __name__ == '__main__':
     import sys
     base = sys.argv[1]
-    for i in range(1,4):
+    for i in range(1, 4):
         photfile = f'{base}/{base}_{i}.phot'
         colfile = photfile + '.columns'
         hdffile = photfile + '.hdf5'
