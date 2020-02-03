@@ -1,8 +1,18 @@
 #!/usr/bin/env python
 
+"""Tools to convert raw DOLPHOT output to other formats.
+
+May be executed from the command line.
+EXTREMELY WORK IN PROGRESS.
+
+"""
+
 import pandas as pd
 import re
 import vaex
+
+from astropy.io import fits
+from astropy.wcs import WCS
 
 __all__ = ['read_colfile', 'ascii_to_vaex', 'select_cols']
 
@@ -92,9 +102,10 @@ def ascii_to_vaex(asciifile, names, usecols=None):
         Photometry table.
     """
     usecols = list(range(len(names))) if usecols is None else usecols
-    ds = vaex.from_csv(asciifile, delim_whitespace=True,
+    compression = 'gzip' if asciifile.endswith('gz') else 'infer'
+    ds = vaex.from_csv(asciifile, copy_index=False, delim_whitespace=True,
                        names=names, usecols=usecols, header=None,
-                       na_values=['99.999'], copy_index=False)
+                       na_values=['99.999'], compression=compression)
     return ds
 
 
@@ -109,13 +120,32 @@ def select_cols(df_col, regex='(^[X,Y]$)|(^[F,G]Q?[0-9]{2,5}[W,M,N,X,L]P?_)'):
     """
     cols = df_col.loc[df_col.names.str.match(regex), 'names']
     names = cols.tolist()
-    usecols = (cols.index-1).tolist()
+    usecols = (cols.index - 1).tolist()
     return names, usecols
+
+
+def conv_pix_wcs(x, y, wcsfile, origin=1, name='all_pix2world'):
+    w = WCS(fits.Header.fromtextfile(wcsfile))
+    return getattr(w, name)(x, y, origin)
+
+
+def add_wcs(ds, base, firstcols=['RA', 'DEC', 'X', 'Y']):
+    if 'RA' in ds.get_column_names():
+        ds.drop('RA', inplace=True, check=False)
+    if 'DEC' in ds.get_column_names():
+        ds.drop('DEC', inplace=True, check=False)
+    wcsfile = f'{base}/{base}_F475W_drc_wcs.txt'
+    ra, dec = conv_pix_wcs(*ds.evaluate(['X', 'Y']), wcsfile)
+    ds.add_column('RA', ra)
+    ds.add_column('DEC', dec)
+    names = firstcols + [n for n in ds.get_column_names()
+                         if n not in firstcols]
+    return ds[names]
 
 
 def calc_xmed(ds_left, ds_right):
     # get center pixel for overlapping photometry
-    return int(round((ds_right.X.min() + ds_left.X.max())/2))
+    return int(round((ds_right.X.min() + ds_left.X.max()) / 2))
 
 
 def merge_parallel_phot(name, export=True):
@@ -129,6 +159,7 @@ def merge_parallel_phot(name, export=True):
     ds3.select(f'X >= {x1}', name='__filter__')
     ds = vaex.dataframe.DataFrameConcatenated([d.extract() for d in
                                                [ds1, ds2, ds3]])
+    ds = add_wcs(ds, name)
     if export:
         ds.export_hdf5(f'{name}/{name}.phot.hdf5')
         print(f'Merged catalogs written to {name}/{name}.phot.hdf5')
@@ -138,14 +169,16 @@ def merge_parallel_phot(name, export=True):
 
 if __name__ == '__main__':
     import sys
+    import os
     base = sys.argv[1]
+    os.system(f'gzip {base}/*.phot')
     for i in range(1, 4):
         photfile = f'{base}/{base}_{i}.phot'
         colfile = photfile + '.columns'
         hdffile = photfile + '.hdf5'
         df_col = read_colfile(colfile)
         names, usecols = select_cols(df_col)
-        ascii_to_vaex(photfile, names=names,
+        ascii_to_vaex(photfile + '.gz', names=names,
                       usecols=usecols).export_hdf5(hdffile)
         print(f'Written {hdffile}')
     merge_parallel_phot(base)
