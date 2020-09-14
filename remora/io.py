@@ -83,32 +83,45 @@ def read_colfile(colfile, replace_single=replace_single,
     return df_col
 
 
-def ascii_to_vaex(asciifile, names, usecols=None):
+def ascii_to_vaex(asciifile, df_col=None, names=None, usecols=None, **kwargs):
     """Read raw DOLPHOT output photometry into Vaex.
 
     Inputs
     ------
     asciifile : str, path object or file-like object
-        Path to DOLPHOT photometry file; see pandas.read_csv
-    names : list-like
-        Sequence of column names; see pandas.read_csv
+        Path to DOLPHOT photometry file; see `pandas.read_csv`
+    df_col : pandas.DataFrame, optional
+        DataFrame read in from DOLPHOT columns file; see `read_colfile`
+    names : list-like, optional
+        Sequence of column names; see `pandas.read_csv`
+        Either `names` or `df_col` must be specified.
     usecols : list-like or callable, optional
-        Subset of columns to be read in; see pandas.read_csv
-        If None, assumes 'names' sequence corresponds to first N columns
+        Subset of columns to be read in; see `pandas.read_csv`
+        If None, assumes `names` corresponds to first N columns
+        Default: None
+    **kwargs
+        Other keyword arguments to be passed to `vaex.from_csv`
 
     Returns
     -------
     ds : vaex.dataframe.DataFrame
         Photometry table.
     """
-    usecols = list(range(len(names))) if usecols is None else usecols
-    compression = 'gzip' if asciifile.endswith('gz') else 'infer'
-    ds = vaex.from_csv(asciifile, copy_index=False, delim_whitespace=True,
-                       names=names, usecols=usecols, header=None,
-                       na_values=['99.999'], compression=compression)
+    if df_col is not None:
+        names = df_col['names'].tolist()
+        usecols = (df_col.index - 1).tolist()
+    else:
+        usecols = list(range(len(names))) if usecols is None else usecols
+    # null mag values are 99.999, null mag err values are 9.999
+    na_values = {n : '99.999' for n in names if
+                 (n.endswith('VEGA') | n.endswith('TRANS'))}
+    na_values.update({n : '9.999' for n in names if n.endswith('ERR')})
+    ds = vaex.from_csv(asciifile, names=names, usecols=usecols, header=None,
+                       delim_whitespace=True, na_values=na_values,
+                       float_precision='round_trip', **kwargs)
     return ds
 
-
+# for m31: copy_index=True, chunk_size=100_000, convert=gscratch/scrubbed
 # HERE BE DRAGONS aka non-generalized functions
 
 
@@ -124,9 +137,11 @@ def select_cols(df_col, regex='(^[X,Y]$)|(^[F,G]Q?[0-9]{2,5}[W,M,N,X,L]P?_)'):
     return names, usecols
 
 
-def conv_pix_wcs(x, y, wcsfile, origin=1, name='all_pix2world'):
+def conv_pix_wcs(x, y, wcsfile):
+    # dolphot coordinates are half a pixel off from everything else
+    # i yearn for death
     w = WCS(fits.Header.fromtextfile(wcsfile))
-    return getattr(w, name)(x, y, origin)
+    return w.all_pix2world(x, y, 0.5)
 
 
 def add_wcs(ds, base, firstcols=['RA', 'DEC', 'X', 'Y']):
